@@ -6,14 +6,13 @@ Created by Jiedan<lxb429@gmail.com> on 2010-11-08.
 """
 
 __author__ = ["Jiedan<lxb429@gmail.com>", "williamgateszhao<williamgateszhao@gmail.com>"]
-__version__ = "0.6.4"
+__version__ = "0.6.5"
 
 import sys
 import os
 import time
 import hashlib
 import re
-import uuid
 import string
 import logging
 from email.mime.multipart import MIMEMultipart
@@ -23,7 +22,6 @@ from email.utils import parsedate_tz
 from datetime import date, datetime, timedelta
 import codecs
 import ConfigParser
-import getpass
 import subprocess
 import Queue, threading
 import socket, urllib2, urllib
@@ -177,7 +175,10 @@ TEMPLATES['content.html'] = """<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
               {{ item['title'] }}
               {% end %}
             </h2>
-            {% if item['published'] %}{{ item['published'] }}{% end %}
+            {{ feed['title'] }}
+            <br />
+            {% if item['author'] %}{{ escape(item['author']) }}{% end %}   {% if item['published'] %}{{ item['published'] }}{% end %}
+            
             <div>{{ item['content'] }}</div>
         </div>
         {% end %}
@@ -215,7 +216,7 @@ TEMPLATES['toc.ncx'] = """<?xml version="1.0" encoding="UTF-8"?>
               <navLabel><text>{{ escape(item['title']) }}</text></navLabel>
               <content src="content.html#article_{{ feed_idx }}_{{ item['idx'] }}" />
               <mbp:meta name="description">{{ escape(item['stripped']) }}</mbp:meta>
-              <mbp:meta name="author">{% if item['author'] %}{{ item['author'] }}{% end %}</mbp:meta>
+              <mbp:meta name="author">{{ escape(item['author']) }}</mbp:meta>
             </navPoint>
             {% end %}
         </navPoint>
@@ -254,7 +255,7 @@ TEMPLATES['content.opf'] = """<?xml version="1.0" encoding="utf-8"?>
     <dc:title>{{ user }}'s kindle reader({{ mobitime.strftime("%m/%d %H:%M") }})</dc:title>
     {% end %}
     <dc:language>zh-CN</dc:language>
-    <dc:identifier id="uid">{{ user }}{{ datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ") }}</dc:identifier>
+    <dc:identifier id="uid">{{ user }}</dc:identifier>
     <dc:creator>kindlereader</dc:creator>
     <dc:publisher>kindlereader</dc:publisher>
     <dc:subject>{{ user }}'s kindle reader</dc:subject>
@@ -309,7 +310,6 @@ class KRConfig():
         self.mail_to = self.getmail_to(config)
         self.mail_username = self.getmail_username(config)
         self.mail_password = self.getmail_password(config)
-        self.mail_overlay = self.getmail_overlay(config)
         self.user = self.getuser(config)
         self.max_items_number = self.getmax_items_number(config)
         self.max_image_per_article = self.getmax_image_per_article(config)
@@ -406,12 +406,6 @@ class KRConfig():
         except:
             return 0
         
-    def getmail_overlay(self, config = None):
-        try:
-            return int(config.get('mail', 'overlay').strip())
-        except:
-            return 0
-        
     def getuser(self, config = None):
         try:
             return str(config.get('reader', 'username').strip())
@@ -473,12 +467,14 @@ class feedDownloader(threading.Thread):
     
     remove_tags = ['script', 'object', 'video', 'embed', 'iframe', 'noscript', 'style']
     remove_attributes = ['class', 'id', 'title', 'style', 'width', 'height', 'onclick']
-    
-    def __init__(self, threadname):
+            
+    def __init__(self, threadname, config):
         threading.Thread.__init__(self, name = threadname)
+        self.krconfig = config
         
     def run(self):
         global feedq
+        
         while True:
             i = feedq.get()
             feed_data, force_full_text = self.getfeed(i['feed'])
@@ -537,9 +533,10 @@ class feedDownloader(threading.Thread):
 
     def makelocal(self, feed_data, feed_idx, force_full_text = 0):
         '''生成解析结果'''
+        global imgq
         global updated_feeds
         global feedlock
-        
+            
         try:
             local = {
                     'idx': feed_idx,
@@ -549,7 +546,7 @@ class feedDownloader(threading.Thread):
                 
             item_idx = 1
             for entry in feed_data.entries:
-                if item_idx > krconfig.max_items_number:
+                if item_idx > self.krconfig.max_items_number:
                     break
                         
                 try:
@@ -557,18 +554,21 @@ class feedDownloader(threading.Thread):
                 except:
                     published_datetime = self.parsetime(entry.published)
                     
-                if datetime.utcnow() - published_datetime > krconfig.max_old_date:
+                if datetime.utcnow() - published_datetime > self.krconfig.max_old_date:
                     break
                     
                 try:
-                    local_author = entry.author
+                    if entry.author:
+                        local_author = entry.author
+                    else:
+                        local_author = "anonymous"
                 except:
-                    local_author = "null"
+                    local_author = "anonymous"
                         
                 local_entry = {
                                'idx': item_idx,
                                'title': entry.title,
-                               'published':(published_datetime + krconfig.timezone).strftime("%Y-%m-%d %H:%M:%S"),
+                               'published':(published_datetime + self.krconfig.timezone).strftime("%Y-%m-%d %H:%M:%S"),
                                'url':entry.link,
                                'author':local_author,
                             }
@@ -606,16 +606,16 @@ class feedDownloader(threading.Thread):
             # 针对Mon,13 May 2013 06:48:25 GMT+8这样的奇葩格式
             if strdatetime[-5:-2] == 'GMT':
                 t = datetime.strptime(strdatetime[:-6], '%a,%d %b %Y %H:%M:%S')
-                return (t - timedelta(hours = int(strdatetime[-2:-1])) + krconfig.timezone)
+                return (t - timedelta(hours = int(strdatetime[-2:-1])) + self.krconfig.timezone)
             # feedparser对非utc时间的支持有问题（Wes, 22 May 2013 13:54:00 +0800这样的）
             elif (strdatetime[-5:-3] == '+0' or strdatetime[-5:-3] == '-0') and strdatetime[-2:] == '00':
                 a = parsedate_tz(strdatetime)
                 t = datetime(*a[:6]) - timedelta(seconds = a[-1])
-                return (t + krconfig.timezone)
+                return (t + self.krconfig.timezone)
             else:
-                return (datetime.utcnow() + krconfig.timezone)
+                return (datetime.utcnow() + self.krconfig.timezone)
         except Exception, e:
-            return (datetime.utcnow() + krconfig.timezone)
+            return (datetime.utcnow() + self.krconfig.timezone)
             
     def force_full_text(self, url):
         '''当需要强制全文输出时，将每个entry单独发给fivefilters'''
@@ -647,7 +647,7 @@ class feedDownloader(threading.Thread):
         img_count = 0
         images = []
         for img in list(soup.findAll('img')):
-            if (krconfig.max_image_per_article >= 0  and img_count >= krconfig.max_image_per_article) \
+            if (self.krconfig.max_image_per_article >= 0  and img_count >= self.krconfig.max_image_per_article) \
                 or img.has_key('src') is False :
                 img.extract()
             else:
@@ -699,7 +699,7 @@ class feedDownloader(threading.Thread):
         hash_dir = os.path.join(h[0:1], h[1:2])
         filename = image_guid + '.' + ext
 
-        img_dir = os.path.join(krconfig.work_dir, 'data', 'images', hash_dir)
+        img_dir = os.path.join(self.krconfig.work_dir, 'data', 'images', hash_dir)
         fullname = os.path.join(img_dir, filename)
         
         if not os.path.exists(img_dir):
@@ -710,11 +710,14 @@ class feedDownloader(threading.Thread):
    
 class ImageDownloader(threading.Thread):
     '''多线程下载图片'''
-    global imgq
-    def __init__(self, threadname):
+    
+    def __init__(self, threadname, config):
         threading.Thread.__init__(self, name = threadname)
+        self.krconfig = config
         
     def run(self):
+        global imgq
+        
         while True:
             i = imgq.get()
             self.getimage(i)
@@ -734,7 +737,7 @@ class ImageDownloader(threading.Thread):
             response = opener.open(req, timeout = 30)
             with open(i['filename'], 'wb') as img:
                 img.write(response.read())
-            if Image and krconfig.grayscale == 1:
+            if Image and self.krconfig.grayscale == 1:
                 try:
                     img = Image.open(i['filename'])
                     new_img = img.convert("L")
@@ -753,29 +756,27 @@ class ImageDownloader(threading.Thread):
 
 class KindleReader(object):
     """core of KindleReader"""
-    global imgq
-    global feedq
-    
-    def __init__(self, krconfig):
-        pass
+     
+    def __init__(self, config):
+        self.krconfig = config
       
     def sendmail(self, data):
         """send html to kindle"""
         
-        if not krconfig.mail_from:
+        if not self.krconfig.mail_from:
             raise Exception("'mail from' is empty")
         
-        if not krconfig.mail_to:
+        if not self.krconfig.mail_to:
             raise Exception("'mail to' is empty")
         
-        if not krconfig.mail_host:
+        if not self.krconfig.mail_host:
             raise Exception("'mail host' is empty")
             
-        logging.info("send mail to {} ... " .format(krconfig.mail_to))
+        logging.info("send mail to {} ... " .format(self.krconfig.mail_to))
     
         msg = MIMEMultipart()
-        msg['from'] = krconfig.mail_from
-        msg['to'] = krconfig.mail_to
+        msg['from'] = self.krconfig.mail_from
+        msg['to'] = self.krconfig.mail_to
         msg['subject'] = 'Convert'
     
         htmlText = 'kindle reader delivery.'
@@ -786,20 +787,20 @@ class KindleReader(object):
     
         att = MIMEText(data, 'base64', 'utf-8')
         att["Content-Type"] = 'application/octet-stream'
-        att["Content-Disposition"] = 'attachment; filename="kindle-reader-%s.mobi"' % (datetime.utcnow() + krconfig.timezone).strftime('%Y%m%d-%H%M%S')
+        att["Content-Disposition"] = 'attachment; filename="kindle-reader-%s.mobi"' % (datetime.utcnow() + self.krconfig.timezone).strftime('%Y%m%d-%H%M%S')
         msg.attach(att)
 
         try:
-            if krconfig.mail_ssl == 1:
+            if self.krconfig.mail_ssl == 1:
                 mail = smtplib.SMTP_SSL(timeout = 60)
             else:
                 mail = smtplib.SMTP(timeout = 60)
 
-            mail.connect(krconfig.mail_host, krconfig.mail_port)
+            mail.connect(self.krconfig.mail_host, self.krconfig.mail_port)
             mail.ehlo()
 
-            if krconfig.mail_username and krconfig.mail_password:
-                mail.login(krconfig.mail_username, krconfig.mail_password)
+            if self.krconfig.mail_username and self.krconfig.mail_password:
+                mail.login(self.krconfig.mail_username, self.krconfig.mail_password)
 
             mail.sendmail(msg['from'], msg['to'], msg.as_string())
             mail.close()
@@ -811,7 +812,7 @@ class KindleReader(object):
         
         logging.info("generate .mobi file start... ")
         
-        data_dir = os.path.join(krconfig.work_dir, 'data')
+        data_dir = os.path.join(self.krconfig.work_dir, 'data')
         if not os.path.exists(data_dir):
             os.makedirs(data_dir)
         for tpl in TEMPLATES:
@@ -822,25 +823,24 @@ class KindleReader(object):
             content = t.generate(
                 user = user,
                 feeds = feeds,
-                uuid = uuid.uuid1(),
                 format = format,
-                mobitime = datetime.utcnow() + krconfig.timezone
+                mobitime = datetime.utcnow() + self.krconfig.timezone
             )
             
             with open(os.path.join(data_dir, tpl), 'wb') as fp:
                 fp.write(content)
 
-        mobi8_file = "KindleReader8-%s.mobi" % (datetime.utcnow() + krconfig.timezone).strftime('%Y%m%d-%H%M%S')
-        mobi6_file = "KindleReader-%s.mobi" % (datetime.utcnow() + krconfig.timezone).strftime('%Y%m%d-%H%M%S')
+        mobi8_file = "KindleReader8-%s.mobi" % (datetime.utcnow() + self.krconfig.timezone).strftime('%Y%m%d-%H%M%S')
+        mobi6_file = "KindleReader-%s.mobi" % (datetime.utcnow() + self.krconfig.timezone).strftime('%Y%m%d-%H%M%S')
         opf_file = os.path.join(data_dir, "content.opf")
-        subprocess.call('%s %s -o "%s" > log.txt' % 
-                (krconfig.kindlegen, opf_file, mobi8_file), shell = True)
+        subprocess.call('"%s" "%s" -o "%s" > log.txt' % 
+                (self.krconfig.kindlegen, opf_file, mobi8_file), shell = True)
         
         # kindlegen生成的mobi，含有v6/v8两种格式
         mobi8_file = os.path.join(data_dir, mobi8_file)
         # kindlestrip处理过的mobi，只含v6格式
         mobi6_file = os.path.join(data_dir, mobi6_file)
-        if krconfig.kindlestrip == 1:
+        if self.krconfig.kindlestrip == 1:
             # 调用kindlestrip处理mobi
             try:
                 data_file = file(mobi8_file, 'rb').read()
@@ -861,11 +861,13 @@ class KindleReader(object):
             return mobi_file
 
     def main(self):
-        global updated_feeds     
+        global imgq
+        global feedq
+        global updated_feeds
         feed_idx = 1       
-        feed_num = len(krconfig.feeds)
+        feed_num = len(self.krconfig.feeds)
         
-        for feed in krconfig.feeds:
+        for feed in self.krconfig.feeds:
             if feed[0:4] == 'full':
                 logging.info("[{}/{}](force full text):{}".format(feed_idx, feed_num, feed[4:]))
             else:
@@ -874,16 +876,16 @@ class KindleReader(object):
             feed_idx += 1
             
         feedthreads = []
-        for i in range(krconfig.thread_numbers):
-            f = feedDownloader('Threadfeed %s' % (i + 1))
+        for i in range(self.krconfig.thread_numbers):
+            f = feedDownloader('Threadfeed %s' % (i + 1), self.krconfig)
             feedthreads.append(f)
         for f in feedthreads:
             f.setDaemon(True)
             f.start()
 
         imgthreads = []
-        for i in range(krconfig.thread_numbers):
-            t = ImageDownloader('Threadimg %s' % (i + 1))
+        for i in range(self.krconfig.thread_numbers):
+            t = ImageDownloader('Threadimg %s' % (i + 1), self.krconfig)
             imgthreads.append(t)
         for t in imgthreads:
             t.setDaemon(True)
@@ -893,8 +895,8 @@ class KindleReader(object):
         imgq.join()
         
         if len(updated_feeds) > 0:
-            mobi_file = self.make_mobi(krconfig.user, updated_feeds, krconfig.kindle_format)
-            if mobi_file and krconfig.mail_enable == 1:
+            mobi_file = self.make_mobi(self.krconfig.user, updated_feeds, self.krconfig.kindle_format)
+            if mobi_file and self.krconfig.mail_enable == 1:
                 fp = open(mobi_file, 'rb')
                 self.sendmail(fp.read())
                 fp.close()
@@ -908,12 +910,12 @@ if __name__ == '__main__':
     
     try:
         work_dir = os.path.abspath(os.path.dirname(sys.argv[0]))
-        krconfig = KRConfig(configfile = os.path.join(work_dir, "config.ini"))
+        krc = KRConfig(configfile = os.path.join(work_dir, "config.ini"))
     except:
         logging.error("config file {} not found or format error".format(os.path.join(work_dir, "config.ini")))
         sys.exit(1)
         
-    if not krconfig.kindlegen:
+    if not krc.kindlegen:
         logging.error("Can't find kindlegen")
         sys.exit(1)
         
@@ -921,7 +923,7 @@ if __name__ == '__main__':
     logging.info("welcome, start ...")
         
     try:
-        kr = KindleReader(krconfig = krconfig)
+        kr = KindleReader(config = krc)
         kr.main()
     except Exception, e:
         logging.info("Error: %s " % e)
@@ -929,5 +931,5 @@ if __name__ == '__main__':
     logging.info("used time {}s".format(time.time() - st))
     logging.info("done.")
         
-    if not krconfig.auto_exit:
+    if not krc.auto_exit:
         raw_input("Press any key to exit...")

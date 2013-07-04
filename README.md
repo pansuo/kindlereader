@@ -40,6 +40,7 @@ Kindlereader is Licensed under the MIT license: [http://www.opensource.org/licen
 
 ## Master分支改为不依赖Google Reader（即原来的NoGR分支）以来更新历史
 
+* 0.6.5 修正一个当rss中author为空时的隐蔽错误；修正运行目录不能含有空格的错误；修改模板，在正文界面显示来源和作者；停止为多用户版进一步重构，代码与多用户版开始区分
 * 0.6.4 修正win下的路径错误；修正目录页的内容摘要（过滤html标签）；更换BeautifulSoup版本
 * 0.6.3 新增时区选项，所有可见的日期显示均根据用户选择的时区（默认为+8）；新增灰度图选项，在生成mobi前将图片转为灰度图，减小文件体积（默认关闭）；允许用户选择是否启用kindlestrip
 * 0.6.2 修改mobi文件标题，现在periodical格式在原生系统能自动归档了（但两个文件为同一天的，会将较新的文件归档，目前无法解决）
